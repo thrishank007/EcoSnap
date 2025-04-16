@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import io
 import base64
 from PIL import Image
+import model
 
 # Custom CSS for the Earth to Sky theme
 custom_css = """
@@ -355,7 +356,7 @@ faq_content = [
 # Helper functions
 def classify_waste(image):
     """Mock function to classify waste from an image"""
-    # In a real app, this would call a trained model
+    
     time.sleep(2)  # Simulate processing time
     waste_type = random.choice(waste_types)
     confidence = random.uniform(0.7, 0.98)
