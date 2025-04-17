@@ -6,6 +6,16 @@ import base64
 from huggingface_hub import InferenceClient
 import logging
 from datetime import datetime
+import os
+import json
+import re
+
+# Updated import for HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import TextLoader, DirectoryLoader
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,11 +28,86 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Function to generate mock data (simplified version - use your full generator)
+def generate_mock_data():
+    """Generate mock sustainability data for RAG"""
+    data_dir = "./sustainability_data"
+    os.makedirs(data_dir, exist_ok=True)
+    
+    # Create a simple example file
+    example_content = """
+    # Plastic Waste Sustainability Information
+    
+    ## Recycling Guidelines
+    To recycle plastic bottles, first rinse thoroughly, then place in appropriate bin. This helps reduce landfill waste.
+    
+    ## Creative Reuse
+    Turn old plastic bottles into garden planters by cutting and reshaping. Perfect for home decoration.
+    
+    ## Environmental Impact
+    Plastic bottles take 450 years to decompose in landfills, releasing microplastics.
+    
+    ## Disposal Methods
+    1. Remove labels before disposal.
+    2. Take to collection center.
+    3. Remember to check local regulations.
+    """
+    
+    with open(os.path.join(data_dir, "plastic_general_info.txt"), "w") as f:
+        f.write(example_content)
+    
+    logger.info("Generated mock sustainability data")
+
+# Initialize RAG system with HuggingFace embeddings
+def initialize_sustainability_rag():
+    """Initialize the RAG system with sustainability data using HuggingFace embeddings"""
+    try:
+        # Check if data exists
+        data_dir = "./sustainability_data"
+        if not os.path.exists(data_dir) or len(os.listdir(data_dir)) == 0:
+            logger.warning("Sustainability data not found. Generating mock data...")
+            generate_mock_data()
+            logger.info("Mock data generated successfully")
+        
+        # Use HuggingFace embeddings instead of OpenAI
+        # This uses the all-MiniLM-L6-v2 model which is small and fast
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+        
+        # Check if vector store already exists
+        if os.path.exists("./faiss_index"):
+            vector_store = FAISS.load_local("./faiss_index", embeddings)
+            logger.info("Loaded existing vector store")
+        else:
+            # Load and process documents
+            loader = DirectoryLoader(data_dir, glob="**/*.txt")
+            documents = loader.load()
+            
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200
+            )
+            texts = text_splitter.split_documents(documents)
+            
+            # Create and save vector store
+            vector_store = FAISS.from_documents(texts, embeddings)
+            vector_store.save_local("./faiss_index")
+            logger.info(f"Created new vector store with {len(texts)} chunks")
+        
+        return vector_store
+    except Exception as e:
+        logger.error(f"Error initializing RAG system: {str(e)}")
+        return None
+
+# Initialize the global vector store
+VECTOR_STORE = initialize_sustainability_rag()
+
 # Initialize the InferenceClient
 try:
     client = InferenceClient(
         provider="together",
-        api_key="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",  # Move this to environment variables in production
+        api_key=os.getenv("TOGETHER_API_KEY", "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"),
     )
 except Exception as e:
     logger.error(f"Failed to initialize InferenceClient: {str(e)}")
@@ -99,7 +184,20 @@ async def classify(image: UploadFile = File(...)):
         }]
         
         result = await get_llm_completion(messages)
-        return {"result": result}
+        
+        # Attempt to parse the response as JSON
+        try:
+            # Try to extract JSON array using regex if needed
+            json_match = re.search(r'(\[.*\])', result, re.DOTALL)
+            if json_match:
+                items_list = json.loads(json_match.group(1))
+            else:
+                items_list = json.loads(result)
+            return {"result": items_list}
+        except json.JSONDecodeError:
+            # If JSON parsing fails, log and return the raw result
+            logger.warning(f"Failed to parse JSON from LLM response: {result}")
+            return {"result": [result]}
 
     except HTTPException:
         raise
@@ -112,20 +210,47 @@ async def generate(request: ItemsRequest):
     """
     Generate sustainability recommendations for a list of waste items.
     Returns recycling tips, environmental facts, and disposal methods.
+    Uses RAG to enhance responses with relevant sustainability information.
     """
     try:
         items_str = ", ".join(request.items)
         
+        # Implement RAG - retrieve relevant context based on items
+        context = ""
+        if VECTOR_STORE is not None:
+            # Query vector store for each item
+            all_contexts = []
+            for item in request.items:
+                query = f"sustainability information about {item}"
+                try:
+                    docs = VECTOR_STORE.similarity_search(query, k=2)
+                    if docs:
+                        item_contexts = [doc.page_content for doc in docs]
+                        all_contexts.extend(item_contexts)
+                except Exception as e:
+                    logger.warning(f"Error retrieving context for {item}: {str(e)}")
+            
+            # Create context from retrieved documents
+            if all_contexts:
+                context = "Here's relevant information about these items:\n\n" + "\n\n".join(all_contexts)
+                logger.info(f"Retrieved context for items: {len(all_contexts)} documents")
+            else:
+                logger.warning("No relevant context found in the vector store")
+        else:
+            logger.warning("Vector store not initialized, proceeding without RAG")
+        
+        # Add the retrieved context to the prompt
         messages = [{
             "role": "user",
             "content": [
                 {
                     "type": "text",
-                    "text": f"""
-You are an creative expert in sustainability. For the waste items "{items_str}", return only a valid JSON object:
+                    "text": f"""{context}
+
+You are a creative expert in sustainability. For the waste items "{items_str}", return only a valid JSON object:
 {{
     "recycling_tips": ["", "", ""],         # 3 creative DIY ideas (≤12 words)
-    "environmental_facts": ["", "", ""], # 3 shocking environmental facts (≤20 words)
+    "environmental_facts": ["", "", ""],    # 3 shocking environmental facts (≤20 words)
     "disposal_methods": ["", "", ""]        # 3 location-aware disposal steps (≤15 words)
 }}
 Rules:
@@ -145,18 +270,30 @@ Rules:
         # Clean up the response by removing markdown formatting if present
         cleaned_result = result.strip('`').replace('```json\n', '').replace('\n```', '')
         
-        # Parse the string into a Python dictionary
-        import json
-        parsed_result = json.loads(cleaned_result)
+        # More robust JSON extraction
+        try:
+            # Try direct parsing first
+            parsed_result = json.loads(cleaned_result)
+        except json.JSONDecodeError:
+            # If that fails, try to extract JSON with regex
+            json_match = re.search(r'(\{.*\})', cleaned_result, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+                parsed_result = json.loads(json_str)
+            else:
+                raise ValueError("Could not extract valid JSON from LLM response")
         
         # Return the clean dictionary directly
         return parsed_result
 
     except HTTPException:
         raise
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to parse LLM response as JSON")
     except Exception as e:
         logger.error(f"Unexpected error in generate endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")   
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post('/diy/')
 async def diy(request: ItemsRequest):
@@ -200,20 +337,30 @@ You are an expert in creative sustainability and DIY projects. DIY using "{idea}
         # Clean up the response by removing markdown formatting if present
         cleaned_result = result.strip('`').replace('```json\n', '').replace('\n```', '')
         
-        # Parse the string into a Python dictionary
-        import json
-        parsed_result = json.loads(cleaned_result)
+        # More robust JSON extraction
+        try:
+            # Try direct parsing first
+            parsed_result = json.loads(cleaned_result)
+        except json.JSONDecodeError:
+            # If that fails, try to extract JSON with regex
+            json_match = re.search(r'(\{.*\})', cleaned_result, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+                parsed_result = json.loads(json_str)
+            else:
+                raise ValueError("Could not extract valid JSON from LLM response")
         
         # Return the clean dictionary directly
         return parsed_result
 
     except HTTPException:
         raise
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to parse LLM response as JSON")
     except Exception as e:
-        logger.error(f"Unexpected error in classify endpoint: {str(e)}")
+        logger.error(f"Unexpected error in diy endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
 
 # Health check endpoint
 @app.get("/health")
