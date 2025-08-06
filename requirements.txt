@@ -1,0 +1,39 @@
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+gradio==4.15.0
+
+# File handling and HTTP
+python-multipart==0.0.6
+requests==2.31.0
+aiofiles==23.2.1
+
+# Image processing
+Pillow==10.1.0
+
+# Data validation
+pydantic==2.5.2
+
+# Machine Learning and NLP
+huggingface-hub==0.19.4
+transformers==4.36.2
+torch==2.1.2
+sentence-transformers==2.2.2
+
+# LangChain ecosystem
+langchain==0.1.0
+langchain-community==0.0.10
+langchain-huggingface==0.0.1
+
+# Vector databases
+faiss-cpu==1.7.4
+
+# Text processing
+tiktoken==0.5.2
+
+# Environment and configuration
+python-dotenv==1.0.0
+
+# Additional utilities
+numpy==1.24.3
+pandas==2.0.3
