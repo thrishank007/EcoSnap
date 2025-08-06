@@ -109,7 +109,7 @@ VECTOR_STORE = initialize_sustainability_rag()
 try:
     client = InferenceClient(
         provider="together",
-        api_key=os.getenv("TOGETHER_API_KEY", "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"),
+        api_key=os.getenv("TOGETHER_API_KEY"),
     )
 except Exception as e:
     logger.error(f"Failed to initialize InferenceClient: {str(e)}")
